@@ -493,7 +493,7 @@
 
 			// Set up the location of the host websocket
 			var scheme = window.location.protocol == 'https:' ? 'wss://' : 'ws://';
-			var host = scheme + location.host + "/crawl";
+			var host = scheme + location.host + ":8000/crawl";
 			create_socket(host);
 
 			// Start up the client websocket
