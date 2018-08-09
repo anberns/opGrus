@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+	<link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}">
+</head>
+
+<body class="bg-light">
+
+	<div class="container">
+		<div class="py-5 text-center">
+			<h1>Graphical Web Crawler - Grus</h1>
+			<p class="lead">Description of the crawler</p>
+		</div>
+
+		<div class="row">
+			<div class="col-md-6 order-md-2 mb-4">
+				<h4 class="d-flex justify-content-between align-items-center mb-3">Previous Crawls</h4>
+				<ul class="list-group mb-3">
+					{% if crawls %} {% for crawl in crawls|reverse %}
+					<li class="list-group-item d-flex justify-content-between lh-condensed">
+						<div id={{crawl._id}} onclick="submitPrev(this.id);">
+							<h6 class="my-0">{{crawl.url}}</h6>
+							<small class="text-muted">{{ "Breadth" if crawl.sType == "bfs" else "Depth" }} First Search - {{crawl.limit}}</small>
+						</div>
+						{% if crawl.keyword %}
+						<span class={{ "text-success" if crawl.found else "text-muted" }}>{{crawl.keyword}}</span>
+						{% endif %}
+					</li>
+					{% endfor %} {% else %}
+					<li class="list-group-item d-flex justify-content-between lh-condensed">
+						<div>
+							<h6 class="my-0">No Previous Crawls</h6>
+						</div>
+					</li>
+					{% endif %}
+
+					</form>
+				</ul>
+			</div>
+			<div class="col-md-6 order-md-1">
+				<h4 class="mb-3">New Crawl</h4>
+				<form action="/submit" method="post" class="needs-validation" novalidate>
+					<div class="mb-3">
+						<label for="url">Starting Site</label>
+						<div class="input-group">
+							<div class="input-group-prepend">
+								<span class="input-group-text">https://</span>
+							</div>
+							<input type="text" class="form-control" id="url" name="url" required>
+							<div class="invalid-feedback" style="width: 100%;">
+								Website is required.
+							</div>
+						</div>
+						{% with messages = get_flashed_messages() %}
+							{% if messages %}
+								{% for message in messages %}
+									<div style='color:#F44336;' id="error">{{ message }}</div>
+								{% endfor %}
+							{% endif %}
+						{% endwith %}
+					</div>
+
+					<div class="mb-3">
+						<label for="keyword">Keyword
+							<span class="text-muted">(Optional)</span>
+						</label>
+						<input type="text" class="form-control" id="keyword" name="keyword">
+						<div class="invalid-feedback"></div>
+					</div>
+
+					<div class="row">
+						<div class="col-md-5 mb-3">
+							<label for="limit">Limit</label>
+							<input type="number" min=1 class="form-control" id="limit" name="limit" required>
+							<div class="invalid-feedback">
+								Search limit required.
+							</div>
+						</div>
+						<div class="col-md-7 mb-5">
+							<label for="limit">Search Type</label>
+							<div class="d-block">
+								<div class="custom-control custom-radio">
+									<input id="dfs" name="type" value="dfs" type="radio" class="custom-control-input" checked required>
+									<label class="custom-control-label" for="dfs">Depth First Search</label>
+								</div>
+								<div class="custom-control custom-radio">
+									<input id="bfs" name="type" value="bfs" type="radio" class="custom-control-input" required>
+									<label class="custom-control-label" for="bfs">Breadth First Search</label>
+								</div>
+							</div>
+						</div>
+					</div>
+					<button class="btn btn-primary btn-lg btn-block" type="submit" onClick="hideError();">Crawl</button>
+				</form>
+			</div>
+		</div>
+
+		<footer class="my-5 pt-5 text-muted text-center text-small">
+			<p class="mb-1">CS467 Capstone - Team Grus</p>
+			<a href="https://github.com/anberns/grus">Source</a>
+		</footer>
+	</div>
+
+	
+
+	<script src="{{ url_for('static', filename='vendor/jquery.min.js') }}"></script>
+	<script>
+		(function() {
+			'use strict';
+			window.addEventListener('load', function() {
+				var forms = document.getElementsByClassName('needs-validation');
+				var validation = Array.prototype.filter.call(forms, function(form) {
+					form.addEventListener('submit', function(event) {
+						if (form.checkValidity() === false) {
+							event.preventDefault();
+							event.stopPropagation();
+						}
+						form.classList.add('was-validated');
+					}, false);
+				});
+			}, false);
+		})();
+	</script>
+	<script>
+		function submitPrev(id) {
+			var newForm = document.createElement("form");
+			var newInput = document.createElement("input");
+			newInput.type = "hidden";
+			newForm.action = "/previous";
+			newForm.method = "POST";
+			newInput.value = id;
+			newInput.name = "prev";
+			newForm.appendChild(newInput);
+
+			document.body.appendChild(newForm);
+
+			newForm.submit();
+		}
+		
+		// hides nonexistent url message so blank url message is displayed alone
+		function hideError() {
+			if ($("#error")) {
+				if (!$("#url")[0].checkValidity()) {
+					$("#error").hide();
+				}
+			}
+		};
+	</script>
+</body>
+
+</html>

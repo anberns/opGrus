@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+	<link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}">
+	<style>
+		body {
+			height: 100%;
+			width: 100%;
+			position: absolute;
+		}
+
+		#main {
+			display: flex;
+			flex-flow: column;
+			height: 100%;
+			position: relative;
+		}
+
+		#chart {
+			flex-grow: 1;
+		}
+
+		svg {
+			position: absolute;
+		}
+
+		text {
+			font-family: 'Trebuchet MS', 'Lucida Sans Unicode', 'Lucida Grande', 'Lucida Sans', Arial, sans-serif;
+			text-anchor: middle;
+			font-size: 10px;
+			font-weight: bolder;
+			fill: black;
+			text-shadow: 0px 0px 2px white;
+		}
+
+		line {
+			stroke-width: 1;
+		}
+
+		.path_link line {
+			stroke-width: 2;
+		}
+
+		@keyframes blink {
+			0% {
+				opacity: .1;
+			}
+			20% {
+				opacity: 1;
+			}
+			100% {
+				opacity: .2;
+			}
+		}
+
+		.waiting span {
+			animation-name: blink;
+			animation-duration: 1.4s;
+			animation-iteration-count: infinite;
+			animation-fill-mode: both;
+		}
+
+		.waiting span:nth-child(2) {
+			animation-delay: .2s;
+		}
+
+		.waiting span:nth-child(3) {
+			animation-delay: .4s;
+		}
+	</style>
+</head>
+
+<body class="bg-light">
+
+	<div id="main">
+		<div id="header" class="py-1 text-center">
+			<h1>Graphical Web Crawler - Grus</h1>
+			<p class="lead" id="headerText"></p>
+			<div id="stop" class = "btn btn-primary" role="button" onclick="stopCrawl()">Stop Crawl</div>
+			<a id="newCrawl" class="btn btn-primary" href="/" role="button">New Crawl</a>
+			<div id="toggler" class="btn-group btn-group-toggle" data-toggle="buttons">
+				<label class="btn btn-info active">
+					<input type="radio" id="hide" autocomplete="off"> Hide Unvisited
+				</label>
+				<label class="btn btn-info">
+					<input type="radio" id="show" autocomplete="off"> Show Unvisited
+				</label>
+			</div>
+		</div>
+		<div id="chart"></div>
+	</div>
+
+	<script src="{{ url_for('static', filename='vendor/jquery.min.js') }}"></script>
+	<script src="{{ url_for('static', filename='vendor/d3.min.js') }}"></script>
+	<script>
+
+		// global websocket
+		var ws;
+
+		// load inital header for visualizer page
+		function loadInitialHeader() {
+			$("#newCrawl").hide();
+			$("#toggler").hide();
+
+			$("#headerText").addClass("waiting")
+				.text(
+					"Performing a {{ 'breadth' if type == 'bfs' else 'depth' }}-first search on '{{ url }}'{% if keyword %} for the word '{{keyword}}'{% endif %}"
+				)
+				.append("<span>.</span>").append("<span>.</span>").append("<span>.</span>");
+		}
+
+		// header to display previously stored crawl
+		function loadPrevHeader() {
+			$("#stop").hide();
+			var timeStamp = new Date(parseInt("{{ docId }}".substring(0, 8), 16) * 1000);
+
+			$("#headerText").html(
+				"{{ 'Breadth' if type == 'bfs' else 'Depth' }}-first search on '{{ url }}'{% if keyword %} for the word '{{keyword}}', which was {{ 'found' if found == True else 'not found' }}{% endif %} {% if early == True %} (ended early) {% endif %}<br>" +
+				timeStamp);
+		}
+
+		// change header to display end of crawl and elapsed time
+		function updateHeader(searchTime, found = false) {
+			$("#stop").hide();
+			$("#newCrawl").show();
+			$("#toggler").show();
+			$("#headerText").html(
+				"{{ 'Breadth' if type == 'bfs' else 'Depth' }}-first search on '{{ url }}'{% if keyword %} for the word '{{keyword}}'{% endif %} completed in " +
+				searchTime.toFixed(2) +
+				" seconds{% if keyword %}<br>Keyword '{{ keyword }}' " + ("{{ keyword }}" && !found ? "not " : "") +
+				"found.{% endif %}").removeClass("waiting");
+		}
+
+		// stop crawl gracefully
+		function stopCrawl() {
+			ws.send("stop");
+			$("#stop").hide();
+		}
+
+
+		var margin = {
+			top: 10,
+			right: 15,
+			bottom: 10,
+			left: 15
+		};
+
+		var width = 425 - margin.left - margin.right;
+		var height = 625 - margin.top - margin.bottom;
+
+		var dataset = {
+			nodes: [],
+			links: []
+		};
+		var show_unvisited = false;
+		var max_depth = 0;
+
+		// Toggle the grey nodes
+		$("#toggler :input").click(function() {
+			$("#toggler label").removeClass("active");
+			$(this).parent().addClass("active");
+			if ($(this).attr("id") == "hide" && show_unvisited == true) {
+				show_unvisited = false;
+				update({
+					nodes: dataset.nodes.filter(el => el.visited),
+					links: dataset.links.filter(el => el.in_path)
+				});
+			} else if ($(this).attr("id") == "show" && show_unvisited == false) {
+				show_unvisited = true;
+				update({
+					nodes: dataset.nodes,
+					links: dataset.links
+				});
+			}
+		});
+
+		// Create the svg where the visualization will reside
+		var svg = d3.select('#chart')
+			.append('svg')
+			.attr('width', width + margin.left + margin.right)
+			.attr('height', height + margin.top + margin.bottom)
+			.call(responsivefy)
+			.call(d3.zoom().on("zoom", function() {
+				svg.attr("transform", d3.event.transform)
+			}))
+			.append('g')
+			.attr('transform', `translate(${margin.left}, ${margin.top})`);
+
+		// Create the force simulation that governs the forces on the nodes
+		var simulation = d3.forceSimulation()
+			.force("link", d3.forceLink().id(d => d.url).distance(d => d.in_path ? 100 : 30))
+			.force("charge", d3.forceManyBody().distanceMax(400))
+			.force("center", d3.forceCenter(width / 2, height / 2))
+			.force("collide", d3.forceCollide(d => d.visited ? 30 : 0))
+			.on("tick", ticked);
+
+		// Create arrows to show directionality
+		var mark = svg.append("svg:defs")
+			.attr("class", "markers")
+			.selectAll("marker");
+
+		// A selection of all of the visual representations of the links
+		var link = svg.append("g")
+			.attr("class", "links")
+			.selectAll("line");
+
+		// A selection of all of the visual representations of the sites
+		var node = svg.append("g")
+			.attr("class", "nodes")
+			.selectAll("circle");
+
+		// A selection of all of the visual representations of the links in the path
+		var path_link = svg.append("g")
+			.attr("class", "path_link")
+			.selectAll("line");
+
+		// A selection of all of the visual representations of the sites in the path
+		var path_node = svg.append("g")
+			.attr("class", "path_node")
+			.selectAll("circle");
+
+		// A selection of all of the visual representations of the site names
+		var title = svg.append("g")
+			.attr("class", "titles")
+			.selectAll("text");
+
+
+		/**
+		 * Reformat data from the server to fit the format of the visualization
+		 *
+		 * @param {*} json_data Json data from the server
+		 */
+		function parse_data(site) {
+			site.visited = true;
+			if (site.depth > max_depth) max_depth = site.depth;
+
+			var old_site = dataset.nodes.find(el => el.url == site.url);
+
+			if (old_site) {
+				// Update node properties if this site was already found
+				for (var prop in site) {
+					old_site[prop] = site[prop];
+				}
+			} else {
+				dataset.nodes.push(site);
+			}
+
+			// Add a link for a site we visited
+			if (site.parent) {
+				if (show_unvisited) {
+					dataset.links.find(el => el.source.url == site.parent &&
+						el.target.url == site.url).in_path = true;
+				} else {
+					dataset.links.find(el => el.source == site.parent &&
+						el.target == site.url).in_path = true;
+				}
+			}
+
+			// Add links to ones found on pages
+			site.links.forEach(href => {
+				if (dataset.nodes.findIndex(el => el.url == href) == -1) {
+					// Add a new site to our list of sites
+					dataset.nodes.push({
+						url: href,
+						cx: 0,
+						cy: 0
+					});
+				}
+				dataset.links.push({
+					source: site.url,
+					target: href,
+					depth: site.depth,
+					in_path: false
+				});
+			});
+
+			// Update the dataset with svg properties
+			old_sites = d3.selectAll('circle').data().forEach(circle => {
+				var dataset_node = dataset.nodes.find(el => el.url == circle.id);
+				if (dataset_node)
+					["cx", "cy"].forEach(prop => dataset_node[prop] = circle[prop]);
+			});
+			old_links = d3.selectAll('line').data().forEach(line => {
+				var dataset_link = dataset.links.find(el => el.source + "-" + el.target == line.id);
+				if (dataset_link)
+					["x1", "y1", "x2", "y2"].forEach(prop => dataset_link[prop] = circle[prop]);
+			})
+
+			update({
+				nodes: show_unvisited ? dataset.nodes : dataset.nodes.filter(el => el.visited),
+				links: show_unvisited ? dataset.links : dataset.links.filter(el => el.in_path)
+			});
+		}
+		/**
+		 * Sets the data used for the visualization
+		 *
+		 * @param {*} data Object containing the nodes and links to use for the viz
+		 */
+		function update(data) {
+
+			// Update the markers
+			d3.selectAll("marker").remove();
+
+			mark.data(["out_of_path"].concat([...Array(max_depth).keys()]))
+				.enter().append("svg:marker")
+				.attr("id", d => "marker_" + d)
+				.attr("viewBox", "0 -5 10 10")
+				.attr("refX", 15)
+				.attr("refY", 0)
+				.attr("markerWidth", d => d == "out_of_path" ? 0 : 4)
+				.attr("markerHeight", d => d == "out_of_path" ? 0 : 4)
+				.attr('fill', d => d == "out_of_path" ? "#000" : color(d))
+				.attr("orient", "auto")
+				.append("svg:path")
+				.attr("d", "M0,-5L10,0L0,5");
+
+			// Update links
+			link = link.data(data.links.filter(el => !el.in_path), d => d.source.url + "-" + d.target.url)
+				.attr("marker-end", d => "url(#marker_ou_of_path)")
+				.attr("stroke", "#ccc");
+
+			// Delete removed links
+			link.exit().remove();
+
+			// Add any new links
+			link = link.enter().append("line").merge(link)
+				.attr("marker-end", d => "url(#marker_ou_of_path)")
+				.attr("stroke", "#ccc");
+
+
+			// Update nodes
+			node = node.data(data.nodes.filter(el => !el.visited), d => d.url)
+				.attr("fill", "#ccc")
+				.attr("r", 3);
+
+			// Delete removed sites
+			node.exit().remove();
+
+			// Add any new sites
+			node = node.enter().append("circle")
+				.attr("fill", "#ccc")
+				.attr("r", 3)
+				.on("click", d => window.open(d.url))
+				.call(d3.drag()
+					.on("start", drag_started)
+					.on("drag", dragged)
+					.on("end", drag_ended))
+				.merge(node);
+
+			// Show URL on hover
+			node.append("title")
+				.text(d => d.url);
+
+			// Update links
+			path_link = path_link.data(data.links.filter(el => el.in_path), d => d.source.url + "-" + d.target.url)
+				.attr("marker-end", d => "url(#marker_" + d.depth + ")")
+				.attr("stroke", d => color(d.depth));
+
+			// Delete removed links
+			path_link.exit().remove();
+
+			// Add any new links
+			path_link = path_link.enter().append("line")
+				.attr("stroke", d => color(d.depth))
+				.attr("marker-end", d => "url(#marker_" + d.depth + ")")
+				.merge(path_link);
+
+
+			// Update nodes
+			path_node = path_node.data(data.nodes.filter(el => el.visited), d => d.url)
+				.attr("fill", d => color(d.depth))
+				.attr("r", d => d.found ? 10 : 5);
+
+			// Delete removed sites
+			path_node.exit().remove();
+
+			// Add any new sites
+			path_node = path_node.enter().append("circle")
+				.attr("fill", d => color(d.depth))
+				.attr("r", d => d.found ? 10 : 5)
+				.on("click", d => window.open(d.url))
+				.call(d3.drag()
+					.on("start", drag_started)
+					.on("drag", dragged)
+					.on("end", drag_ended))
+				.merge(path_node);
+
+			// Show URL on hover
+			path_node.append("title")
+				.text(d => d.url);
+
+			// Update titles
+			title = title.data(data.nodes.filter(el => el.visited), d => d.url)
+				.text(d => d.title);
+
+			// Delete removed sites
+			title.exit().remove();
+
+			// Add any new sites
+			title = title.enter().append("text")
+				.text(d => d.title)
+				.on("click", d => window.open(d.url))
+				.call(d3.drag()
+					.on("start", drag_started)
+					.on("drag", dragged)
+					.on("end", drag_ended))
+				.merge(title);
+
+			// Show URL on hover
+			title.append("title")
+				.text(d => d.url);
+
+			// Set the nodes and links for the visualization
+			simulation.nodes(data.nodes);
+			simulation.force("link").links(data.links);
+			simulation.alpha(0.3).restart();
+		}
+
+		function color(depth) {
+			return "hsl(" + (360 / (max_depth + 1) * depth) + ", 55%, 65%)";
+		}
+
+		function ticked() {
+			link.attr("x1", d => d.source.x)
+				.attr("y1", d => d.source.y)
+				.attr("x2", d => d.target.x)
+				.attr("y2", d => d.target.y);
+
+			node.attr("cx", d => d.x)
+				.attr("cy", d => d.y);
+
+			path_link.attr("x1", d => d.source.x)
+				.attr("y1", d => d.source.y)
+				.attr("x2", d => d.target.x)
+				.attr("y2", d => d.target.y);
+
+			path_node.attr("cx", d => d.x)
+				.attr("cy", d => d.y);
+
+			title.attr("x", d => d.x)
+				.attr("y", d => d.y);
+		}
+
+		function drag_started(d) {
+			if (!d3.event.active) simulation.alphaTarget(0.3).restart();
+			d.fx = d.x;
+			d.fy = d.y;
+		}
+
+		function dragged(d) {
+			d.fx = d3.event.x;
+			d.fy = d3.event.y;
+		}
+
+		function drag_ended(d) {
+			if (!d3.event.active) simulation.alphaTarget(0);
+			d.fx = null;
+			d.fy = null;
+		}
+
+		function responsivefy(svg) {
+			var container = d3.select(svg.node().parentNode),
+				width = parseInt(svg.style("width")),
+				height = parseInt(svg.style("height"));
+
+			svg.attr("viewBox", "0 0 " + width + " " + height)
+				.call(resize);
+
+			d3.select(window).on("resize." + container.attr("id"), resize);
+
+			function resize() {
+				var target_width = parseInt(container.style("width"));
+				var target_height = parseInt(container.style("height"));
+				svg.attr("width", target_width);
+				svg.attr("height", target_height);
+			}
+		}
+
+		// If there is a data property sent in the response from the server,
+		// Use that as the source for data
+		var data = {{data|tojson}};
+		if (data) {
+			loadPrevHeader();
+			data.forEach(site => parse_data(JSON.parse(site)));
+		} else {
+
+			// load header
+			loadInitialHeader();
+
+			// Set up the location of the host websocket
+			var scheme = window.location.protocol == 'https:' ? 'wss://' : 'ws://';
+			var host = scheme + location.host + "/crawl";
+			create_socket(host);
+
+			// Start up the client websocket
+			function create_socket(hostname) {
+				ws = new WebSocket(hostname);
+				var startTime;
+				var found = false;
+
+				ws.onmessage = function(event) {
+					parsed = JSON.parse(event.data);
+					parse_data(parsed);
+					if (parsed.found) {
+						found = true;
+					}
+				};
+
+				ws.onopen = function() {
+					startTime = Date.now();
+					console.log("Socket Connected");
+				};
+
+				ws.onerror = function() {
+					console.log("Socket Error: " + event.code);
+				};
+
+				ws.onclose = function(event) {
+					updateHeader((Date.now() - startTime) / 1000.0, found);
+					console.log("Socket Closed: " + event.reason);
+					console.log("Close Code: " + event.code);
+					//setTimeout(reconnect(hostname), 1000);
+				};
+			}
+
+			function reconnect(hostname) {
+				console.log("Reconnecting....");
+				create_socket(hostname);
+			}
+
+		}
+	</script>
+	</body>
+
+</html>
