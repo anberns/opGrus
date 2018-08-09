@@ -15,7 +15,7 @@ from flask_sockets import Sockets
 application = Flask(__name__)
 application.secret_key = os.urandom(24)
 
-application.config["MONGO_URI"] = "mongodb://heroku_zlgnt8hx:8qj45t037p6on1oj0r472epmhq@ds233551.mlab.com:33551/heroku_zlgnt8hx"
+application.config["MONGO_URI"] = "mongodb+srv://anberns:Yogi1001!@cluster0-bx1le.mongodb.net/test?retryWrites=true"
 mongo = PyMongo(application)
 sockets = Sockets(application)
 
